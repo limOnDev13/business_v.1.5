@@ -151,6 +151,43 @@ class FishArray():
 
         return dailyFeedMass
 
+    def _calculate_correction_factor(self, numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        b = minKoef
+        k = (maxKoef - minKoef) / amountAddaptionDays
+        result = k * numberPassedDays + b
+        return result
+
+    def daily_work_with_correction_factor(self, numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        # рассчет корректировочного коэффициента
+        if (numberPassedDays <= amountAddaptionDays):
+            correctionFactor = self._calculate_correction_factor(numberPassedDays, amountAddaptionDays,
+                                                                 minKoef, maxKoef)
+        else:
+            correctionFactor = 1.0
+
+        correctionFactor = c_float(correctionFactor)
+
+        # подготовим переменные для использования ctypes
+        dailyWorkLib = self._dllBuisnessPlan.daily_work_with_correction_factor
+
+        dailyWorkLib.argtypes = [POINTER(c_float), POINTER(c_float),
+                                 c_int, c_float, POINTER(c_float), c_float]
+        dailyWorkLib.restype = c_float
+
+        # соберем массивы масс и коэффициентов массонакопления
+        arrayMass = assemble_array(self._arrayFishes, self._amountFishes, 2)
+        arrayMassAccumulationCoefficient = assemble_array(self._arrayFishes,
+                                                          self._amountFishes, 1)
+
+        dailyFeedMass = dailyWorkLib(arrayMass, arrayMassAccumulationCoefficient,
+                                     self._amountFishes, self._feedRatio,
+                                     byref(self._biomass), correctionFactor)
+
+        for i in range(self._amountFishes):
+            self._arrayFishes[i][2] = arrayMass[i]
+
+        return dailyFeedMass
+
     def do_daily_work_some_days(self, amountDays):
         # подготовим переменные для использования ctypes
         dailyWorkLib = self._dllBuisnessPlan.do_daily_work_some_days
@@ -330,6 +367,20 @@ class Pool():
 
     def daily_growth(self, day, saveInfo):
         todayFeedMass = self.arrayFishes.daily_work()
+        # сохраняем массы кормежек
+        self.feeding.append([day, todayFeedMass])
+
+        # проверяем, есть ли рыба на продажу, и если есть - продаем
+        self.sell_fish(day)
+        if (saveInfo):
+            # [день, количество рыбы, биомасса, средняя масса, плотность]
+            self.poolHistory.append([day, self.arrayFishes.get_amount_fishes(), self.arrayFishes.get_biomass(),
+                                     self.arrayFishes.calculate_average_mass(), self.update_density()])
+
+    def daily_growth_with_correction_factor(self, day, saveInfo,
+                                            numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        todayFeedMass = self.arrayFishes.daily_work_with_correction_factor(numberPassedDays, amountAddaptionDays,
+                                                                           minKoef, maxKoef)
         # сохраняем массы кормежек
         self.feeding.append([day, todayFeedMass])
 
@@ -687,6 +738,12 @@ class Module():
         for i in range(self.amountPools):
             self.pools[i].daily_growth(day, save_pool_info)
 
+    def total_daily_work_with_correction_factor(self, day, save_pool_info,
+                                                numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        for i in range(self.amountPools):
+            self.pools[i].daily_growth_with_correction_factor(day, save_pool_info,
+                                                              numberPassedDays, amountAddaptionDays, minKoef, maxKoef)
+
     def print_info(self):
         print()
         for i in range(self.amountPools):
@@ -777,6 +834,34 @@ class Module():
 
         return day
 
+    def grow_up_fish_in_one_pool_with_correction_factor(self, startDay, startDateSaving,
+                                                        numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        flag = True
+        day = startDay
+        currentDateSaving = startDateSaving
+        currentNumberPassedDays = numberPassedDays
+
+        while (flag):
+            while (currentDateSaving < day):
+                currentDateSaving = calculate_end_date_of_month(currentDateSaving)
+
+            if (currentDateSaving == day):
+                needSave = True
+                currentDateSaving = calculate_end_date_of_month(currentDateSaving)
+            else:
+                needSave = False
+
+            self.total_daily_work_with_correction_factor(day, needSave,
+                                                         currentNumberPassedDays, amountAddaptionDays, minKoef, maxKoef)
+            day += date.timedelta(1)
+            currentNumberPassedDays += 1
+            for i in range(self.amountPools):
+                if (self.pools[i].arrayFishes.get_amount_fishes() == 0):
+                    flag = False
+                    break
+
+        return [day, currentNumberPassedDays]
+
     def grow_up_fish_in_two_pools(self, startDay, startDateSaving):
         flag = True
         day = startDay
@@ -807,6 +892,41 @@ class Module():
                 flag = False
 
         return day
+
+    def grow_up_fish_in_two_pools_with_correction_factor(self, startDay, startDateSaving,
+                                                         numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        flag = True
+        day = startDay
+        currentDateSaving = startDateSaving
+        currentNumberPassedDays = numberPassedDays
+
+        while(flag):
+            while (currentDateSaving < day):
+                currentDateSaving = calculate_end_date_of_month(currentDateSaving)
+
+            if (currentDateSaving == day):
+                needSave = True
+                currentDateSaving = calculate_end_date_of_month(currentDateSaving)
+                x = currentDateSaving
+                y = day
+
+            else:
+                needSave = False
+
+            self.total_daily_work_with_correction_factor(day, needSave,
+                                                         currentNumberPassedDays, amountAddaptionDays, minKoef, maxKoef)
+            day += date.timedelta(1)
+            currentNumberPassedDays += 1
+
+            amountEmptyPools = 0
+            for i in range(self.amountPools):
+                if (self.pools[i].arrayFishes.get_amount_fishes() == 0):
+                    amountEmptyPools += 1
+
+            if (amountEmptyPools >= 2):
+                flag = False
+
+        return [day, currentNumberPassedDays]
 
     def start_script1(self, reserve, startDate, koef, deltaMass, minMass, maxMass, mainVolumeFish):
         mainVolumeFish -= reserve
@@ -840,6 +960,54 @@ class Module():
 
         return [mainVolumeFish, day, currentIndex]
 
+    def start_script_with_correction_factor(self, reserve, startDate, koef, deltaMass,
+                                            minMass, maxMass, mainVolumeFish,
+                                            amountAddaptionDays, minKoef, maxKoef):
+        mainVolumeFish -= reserve
+
+        for i in range(self.amountPools - 1):
+            self.pools[i].add_new_biomass(mainVolumeFish, self.masses[i], i, startDate)
+        # в бассейн с самой легкой рыбой отправляем в koef раз больше
+        self.pools[self.amountPools - 1].indexFry = self.amountPools - 1
+        self.pools[self.amountPools - 1].add_new_biomass(int(koef * mainVolumeFish), self.masses[self.amountPools - 1],
+                                                          self.amountPools - 1, startDate)
+
+        day = startDate
+
+
+        # вырастим рыбу в 0 бассейне
+        numberPassedDays = 0
+        res = self.grow_up_fish_in_one_pool_with_correction_factor(day, startDate,
+                                                                   numberPassedDays, amountAddaptionDays,
+                                                                   minKoef, maxKoef)
+        day = res[0]
+        numberPassedDays = res[1]
+
+        # переместим рыбу из 3 в 0 бассейн
+        self.find_pool_with_twice_volume_and_move_half_in_empty()
+
+        # вырастим рыбу в 1 бассейне
+        res = self.grow_up_fish_in_one_pool_with_correction_factor(day, startDate,
+                                                                   numberPassedDays, amountAddaptionDays,
+                                                                   minKoef, maxKoef)
+        day = res[0]
+        numberPassedDays = res[1]
+
+        currentIndex = 4
+
+        # добавим рыбу 2 * mainValue в 1 бассейн
+        self.find_empty_pool_and_add_twice_volume(mainVolumeFish, currentIndex, day, koef, deltaMass, minMass, maxMass)
+        currentIndex += 1
+
+        # вырастим рыбу в 2 бассейне
+        res = self.grow_up_fish_in_one_pool_with_correction_factor(day, startDate,
+                                                                   numberPassedDays, amountAddaptionDays,
+                                                                   minKoef, maxKoef)
+        day = res[0]
+        numberPassedDays = res[1]
+
+        return [mainVolumeFish, day, currentIndex, numberPassedDays]
+
     def main_script1(self, mainValue, day, previousIndex, startDateSaving, koef, deltaMass, minMass, maxMass):
         # переместим из переполненного бассейна в пустой половину
         self.find_pool_with_twice_volume_and_move_half_in_empty()
@@ -871,6 +1039,51 @@ class Module():
 
         return [mainValue, day, currentIndex]
 
+    def main_script_with_correction_factor(self, mainValue, day, previousIndex, startDateSaving,
+                                           koef, deltaMass, minMass, maxMass,
+                                           numberPassedDays, amountAddaptionDays, minKoef, maxKoef):
+        # переместим из переполненного бассейна в пустой половину
+        self.find_pool_with_twice_volume_and_move_half_in_empty()
+
+        # вырастим рыбу в 2 бассейнах
+        res = self.grow_up_fish_in_two_pools_with_correction_factor(day, startDateSaving,
+                                                                    numberPassedDays, amountAddaptionDays,
+                                                                    minKoef, maxKoef)
+        day = res[0]
+        currentNumberPassedDays = res[1]
+
+        currentIndex = previousIndex
+        # добавим mainValue штук рыб в пустой бассейн
+        self.find_empty_pool_and_add_one_volume(mainValue, currentIndex, day, deltaMass, minMass, maxMass)
+        currentIndex += 1
+
+        # добавим koef * mainValue штук рыб в другой пустой бассейн
+        self.find_empty_pool_and_add_twice_volume(mainValue, currentIndex, day, koef, deltaMass, minMass, maxMass)
+        currentIndex += 1
+
+        # вырастим рыбу в 2 бассейнах
+        res = self.grow_up_fish_in_two_pools_with_correction_factor(day, startDateSaving,
+                                                                    currentNumberPassedDays, amountAddaptionDays,
+                                                                    minKoef, maxKoef)
+        day = res[0]
+        currentNumberPassedDays = res[1]
+
+        # переместим из переполненного бассейна в пустой
+        self.find_pool_with_twice_volume_and_move_half_in_empty()
+
+        # добавим 2 * mainValue штук рыб в другой пустой бассейн
+        self.find_empty_pool_and_add_twice_volume(mainValue, currentIndex, day, koef, deltaMass, minMass, maxMass)
+        currentIndex += 1
+
+        # вырастим рыбу в 1 бассейне
+        res = self.grow_up_fish_in_one_pool_with_correction_factor(day, startDate,
+                                                                   currentNumberPassedDays, amountAddaptionDays,
+                                                                   minKoef, maxKoef)
+        day = res[0]
+        currentNumberPassedDays = res[1]
+
+        return [mainValue, day, currentIndex, currentNumberPassedDays]
+
     def main_work1(self, startDate, endDate, reserve, deltaMass, minMass, maxMass, mainVolumeFish):
         resultStartScript = self.start_script1(reserve, startDate, self.correctionFactor,
                                                deltaMass, minMass, maxMass, mainVolumeFish)
@@ -890,6 +1103,36 @@ class Module():
                                                  resultMainScript[1],
                                                  resultMainScript[2],
                                                  startDate, self.correctionFactor, deltaMass, minMass, maxMass)
+            day = resultMainScript[1]
+
+    def main_work_with_correction_factor(self, startDate, endDate, reserve, deltaMass,
+                                         minMass, maxMass, mainVolumeFish,
+                                         amountAddaptionDays, minKoef, maxKoef):
+        resultStartScript = self.start_script_with_correction_factor(reserve, startDate, self.correctionFactor,
+                                                                     deltaMass, minMass, maxMass, mainVolumeFish,
+                                                                     amountAddaptionDays, minKoef, maxKoef)
+
+        # [mainVolumeFish, day, currentIndex, numberPassedDays]
+        day = resultStartScript[1]
+        resultMainScript = self.main_script_with_correction_factor(resultStartScript[0],
+                                                                   resultStartScript[1],
+                                                                   resultStartScript[2],
+                                                                   startDate, self.correctionFactor,
+                                                                   deltaMass, minMass, maxMass,
+                                                                   resultStartScript[3], amountAddaptionDays,
+                                                                   minKoef, maxKoef)
+
+        numberMainScript = 2
+        while (day < endDate):
+            numberMainScript += 1
+            # [mainValue, day, currentIndex]
+            resultMainScript = self.main_script_with_correction_factor(resultMainScript[0],
+                                                                       resultMainScript[1],
+                                                                       resultMainScript[2],
+                                                                       startDate, self.correctionFactor,
+                                                                       deltaMass, minMass, maxMass,
+                                                                       resultMainScript[3], amountAddaptionDays,
+                                                                       minKoef, maxKoef)
             day = resultMainScript[1]
 
     def start_script_with_print(self, reserve, startDate, koef, deltaMass, minMass, maxMass, mainVolumeFish):
@@ -1043,6 +1286,11 @@ class CWSD():
     amountMonth = 0
     grant = 0
 
+    # Все, что связано с периодом адаптации биофильтра
+    amountAdaptionDays = 60
+    minCorrectonFactor = 0.5
+    maxCorrectionFactor = 1.0
+
     mainVolumeFish = 0
 
     # финансовая подушка
@@ -1068,11 +1316,15 @@ class CWSD():
                  amountWorkers=2, equipmentCapacity=5.5, costElectricity=3.17, rent=100000,
                  costCWSD=3000000, principalDebt=500000, annualPercentage=15.0, amountMonth=12, grant=5000000,
                  fishPrice=850, massCommercialFish=400, singleVolumeFish=100, maximumPlantingDensity=40,
-                 financialCushion=300000, depreciationLimit=2000000):
+                 financialCushion=300000, depreciationLimit=2000000, amountAdaptionDays=60,
+                 minCorrectonFactor=0.5, maxCorrectionFactor=1.0):
         self.amountModules = amountModules
         self.mainVolumeFish = mainVolumeFish
         self.feedPrice = feedPrice
         self.financialCushion = financialCushion
+        self.amountAdaptionDays = amountAdaptionDays
+        self.minCorrectonFactor = minCorrectonFactor
+        self.maxCorrectionFactor = maxCorrectionFactor
         self.modules = list()
         for i in range(amountModules):
             module = Module(square, masses, amountPools, correctionFactor,
@@ -1134,6 +1386,15 @@ class CWSD():
     def work_cwsd(self, startDate, endDate, reserve, deltaMass, minMass, maxMass):
         for i in range(self.amountModules):
             self.modules[i].main_work1(startDate, endDate, reserve, deltaMass, minMass, maxMass, self.mainVolumeFish)
+
+        self._calculate_all_casts_and_profits_for_all_period(startDate, endDate)
+
+    def work_cwsd_with_correction_factor(self, startDate, endDate, reserve, deltaMass, minMass, maxMass):
+        for i in range(self.amountModules):
+            self.modules[i].main_work_with_correction_factor(startDate, endDate, reserve, deltaMass,
+                                                             minMass, maxMass, self.mainVolumeFish,
+                                                             self.amountAdaptionDays, self.minCorrectonFactor,
+                                                             self.maxCorrectionFactor)
 
         self._calculate_all_casts_and_profits_for_all_period(startDate, endDate)
 
@@ -1647,7 +1908,6 @@ class Business():
         print('РДР нового узв: ', new_cwsd.expansionReserve)
         print()
 
-
     def _find_info_in_this_date(self, array, thisDate):
         result = None
 
@@ -1905,6 +2165,41 @@ class Business():
         else:
             print('Второе узв поставить не успели')
 
+    def main_script1_with_correction_factor(self, startDate, endDate, reserve,
+                                           deltaMass, minMass, maxMass, costNewCWSD,
+                                           expansionCushion, mainVolume, minSalary, limitSalary):
+        self.cwsds[0].work_cwsd_with_correction_factor(startDate, endDate, reserve, deltaMass, minMass, maxMass)
+
+        firstResult = self._script_with_goal(startDate, endDate, 1, 0,
+                                             costNewCWSD, expansionCushion, minSalary, limitSalary)
+        if (firstResult[0]):
+            # [canStartNewCWSD, dateBeginingSecondCWSD, monthBeginingSecondCWSD, currentMaxGeneralExpenses]
+            print(firstResult[1], ' ', firstResult[2],
+                  ' месяц - на РДР накопилось достаточно для запуска нового узв')
+            self._controller_reserves_when_add_new_cwsd(costNewCWSD, expansionCushion)
+            parametersNew_cwsd = [[10, 0], [11, 0], [12, 0], [13, costNewCWSD]]
+            self.add_new_cwsd(mainVolume, parametersNew_cwsd)
+            self.cwsds[1].work_cwsd_with_correction_factor(firstResult[1], endDate, reserve,
+                                                           deltaMass, minMass, maxMass)
+
+            secondResult = self._script_with_goal(firstResult[1], endDate, firstResult[2], firstResult[3],
+                                                 costNewCWSD, expansionCushion, minSalary, limitSalary)
+
+            if (secondResult[0]):
+                print(secondResult[1], ' ', secondResult[2],
+                      ' месяц - на РДР накопилось достаточно для запуска нового узв')
+                self._controller_reserves_when_add_new_cwsd(costNewCWSD, expansionCushion)
+                parametersNew_cwsd = [[10, 0], [11, 0], [12, 0], [13, costNewCWSD]]
+                self.add_new_cwsd(mainVolume, parametersNew_cwsd)
+                self.cwsds[2].work_cwsd_with_correction_factor(secondResult[1], endDate, reserve,
+                                                               deltaMass, minMass, maxMass)
+                self.calculate_total_business_plan_without_goal(secondResult[1], endDate, secondResult[2],
+                                                                secondResult[3], minSalary, limitSalary)
+            else:
+                print('Третье узв поставить не успели')
+        else:
+            print('Второе узв поставить не успели')
+
     def print_final_info(self):
         '''
             self.totalExpenses += currentExpenses
@@ -2067,6 +2362,6 @@ else:
     print('Все ок, мы не ушли в минус)))')
 '''
 business = Business(masses, mainVolumeFish)
-business.main_script1(startDate, endDate, reserve, deltaMass, minMass, maxMass, 4600000, 200000, mainVolumeFish,
-                     100000, 200000)
+business.main_script1_with_correction_factor(startDate, endDate, reserve, deltaMass, minMass, maxMass, 4600000, 200000, mainVolumeFish,
+                                             100000, 200000)
 business.print_detailed_info()
